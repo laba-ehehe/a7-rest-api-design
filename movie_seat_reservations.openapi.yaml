@@ -10,7 +10,6 @@ info:
     that hold before payment. Seat availability may change between requests;
     the POST operation checks and reserves all requested seats atomically.
     Successful holds expire automatically after five minutes unless paid for.
-    This document describes an API design, not an implemented service.
 
 servers:
   - url: https://api.cinemahouse.example/v1

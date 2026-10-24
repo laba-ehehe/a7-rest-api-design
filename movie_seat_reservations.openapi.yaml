@@ -1,0 +1,279 @@
+openapi: 3.0.3
+
+info:
+  title: CinemaHouse Seat Reservation API
+  version: 1.0.0
+  description: >-
+    A proposed REST API for the seat-selection and temporary-reservation part of
+    an online movie-ticket purchase. A customer can view seats for a particular
+    showtime, hold one or more available seats while checking out, and cancel
+    that hold before payment. Seat availability may change between requests;
+    the POST operation checks and reserves all requested seats atomically.
+    Successful holds expire automatically after five minutes unless paid for.
+    This document describes an API design, not an implemented service.
+
+servers:
+  - url: https://api.cinemahouse.example/v1
+    description: Illustrative endpoint; no live server is provided.
+
+tags:
+  - name: Seat reservations
+    description: Check seat availability and manage temporary seat holds.
+
+paths:
+  /showtimes/{showtimeId}/seats:
+    get:
+      tags: [Seat reservations]
+      operationId: listShowtimeSeats
+      summary: Get the availability and prices of seats for a showtime
+      description: >-
+        Returns a seat map including seat identifiers, current availability,
+        and ticket prices. Results are a snapshot; availability is rechecked
+        when a reservation is created.
+      parameters:
+        - name: showtimeId
+          in: path
+          required: true
+          description: Unique identifier of the selected movie showtime.
+          schema:
+            type: string
+          example: st_204
+      responses:
+        '200':
+          description: Seat map retrieved successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeatMap'
+              example:
+                showtimeId: st_204
+                currency: USD
+                seats:
+                  - seatId: A1
+                    status: available
+                    priceCents: 1450
+                  - seatId: A2
+                    status: held
+                    priceCents: 1450
+                  - seatId: A3
+                    status: sold
+                    priceCents: 1450
+                  - seatId: A4
+                    status: available
+                    priceCents: 1450
+        '404':
+          description: The specified showtime does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: SHOWTIME_NOT_FOUND
+                message: No showtime exists with ID st_204.
+
+  /reservations:
+    post:
+      tags: [Seat reservations]
+      operationId: createSeatReservation
+      summary: Temporarily reserve selected seats for checkout
+      description: >-
+        Attempts to hold all requested seats for five minutes. The server
+        performs an atomic availability check so a seat cannot be held by two
+        customers simultaneously. No payment is collected by this endpoint.
+      requestBody:
+        required: true
+        description: Showtime, selected seats, and email for the reservation.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReservationRequest'
+            example:
+              showtimeId: st_204
+              seatIds: [A1, A4]
+              customerEmail: customer@example.com
+      responses:
+        '201':
+          description: Seats reserved temporarily; proceed to payment before expiration.
+          headers:
+            Location:
+              description: Relative URL of the new reservation.
+              schema:
+                type: string
+              example: /v1/reservations/res_871
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reservation'
+              example:
+                reservationId: res_871
+                showtimeId: st_204
+                seatIds: [A1, A4]
+                status: held
+                currency: USD
+                totalCents: 2900
+                holdExpiresAt: '2026-10-30T19:05:00Z'
+        '400':
+          description: Invalid request body, such as missing seats or malformed email.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: INVALID_REQUEST
+                message: At least one seatId is required.
+        '404':
+          description: The selected showtime does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: SHOWTIME_NOT_FOUND
+                message: No showtime exists with ID st_204.
+        '409':
+          description: One or more selected seats are held or already sold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: SEAT_UNAVAILABLE
+                message: Seat A4 is no longer available; refresh the seat map.
+
+  /reservations/{reservationId}:
+    delete:
+      tags: [Seat reservations]
+      operationId: cancelSeatReservation
+      summary: Cancel an unpaid seat reservation and release its hold
+      description: >-
+        Cancels an active, unpaid reservation and releases its held seats.
+        Paid reservations are not cancellable using this endpoint; they require
+        a separate ticket-refund process. An expired or already-cancelled hold
+        cannot be cancelled again.
+      parameters:
+        - name: reservationId
+          in: path
+          required: true
+          description: Unique identifier returned when the reservation was created.
+          schema:
+            type: string
+          example: res_871
+      responses:
+        '204':
+          description: Reservation cancelled; seats released. No response body.
+        '404':
+          description: Reservation ID was not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: RESERVATION_NOT_FOUND
+                message: No reservation exists with ID res_871.
+        '409':
+          description: Reservation has already been paid, cancelled, or expired.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example:
+                code: RESERVATION_NOT_CANCELLABLE
+                message: This reservation is not an active unpaid hold.
+
+components:
+  schemas:
+    SeatMap:
+      type: object
+      required: [showtimeId, currency, seats]
+      properties:
+        showtimeId:
+          type: string
+          example: st_204
+        currency:
+          type: string
+          description: ISO 4217 currency code.
+          example: USD
+        seats:
+          type: array
+          items:
+            $ref: '#/components/schemas/Seat'
+
+    Seat:
+      type: object
+      required: [seatId, status, priceCents]
+      properties:
+        seatId:
+          type: string
+          example: A1
+        status:
+          type: string
+          enum: [available, held, sold]
+          example: available
+        priceCents:
+          type: integer
+          minimum: 0
+          description: Price in the smallest currency unit; 1450 = $14.50 USD.
+          example: 1450
+
+    CreateReservationRequest:
+      type: object
+      required: [showtimeId, seatIds, customerEmail]
+      properties:
+        showtimeId:
+          type: string
+          example: st_204
+        seatIds:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+          example: [A1, A4]
+        customerEmail:
+          type: string
+          format: email
+          example: customer@example.com
+
+    Reservation:
+      type: object
+      required: [reservationId, showtimeId, seatIds, status, currency, totalCents, holdExpiresAt]
+      properties:
+        reservationId:
+          type: string
+          example: res_871
+        showtimeId:
+          type: string
+          example: st_204
+        seatIds:
+          type: array
+          items:
+            type: string
+          example: [A1, A4]
+        status:
+          type: string
+          enum: [held]
+          description: The POST response represents an active, unpaid hold.
+        currency:
+          type: string
+          example: USD
+        totalCents:
+          type: integer
+          minimum: 0
+          example: 2900
+        holdExpiresAt:
+          type: string
+          format: date-time
+          example: '2026-10-30T19:05:00Z'
+
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Machine-readable identifier for the error.
+          example: SEAT_UNAVAILABLE
+        message:
+          type: string
+          description: Human-readable explanation or recovery guidance.
+          example: Refresh the seat map and choose another seat.
